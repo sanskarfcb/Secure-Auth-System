@@ -1,11 +1,12 @@
 package com.example.Secure.Auth.System.Service;
 
-
 import com.example.Secure.Auth.System.Dtos.LoginRequest;
 import com.example.Secure.Auth.System.Dtos.SignupRequest;
 import com.example.Secure.Auth.System.Model.User;
 import com.example.Secure.Auth.System.Repository.UserRepo;
-import com.example.Secure.Auth.System.Security.jwtUtil;
+import com.example.Secure.Auth.System.Security.JwtUtil;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -21,7 +22,7 @@ public class AuthService {
     private AuthenticationManager authenticationManager;
 
     @Autowired
-    private jwtUtil jwtUtil;
+    private JwtUtil jwtUtil;
 
     @Autowired
     private UserRepo userRepo;
@@ -32,34 +33,86 @@ public class AuthService {
     @Autowired
     private EmailService emailService;
 
-    public  String signup(SignupRequest request){
-        if(userRepo.findByEmail(request.getEmail()).isPresent()){
-            throw new RuntimeException("User already existed");
-        }
-        User user = new User();
-        user.setUsername(request.getUsername());
-        user.setEmail((request.getEmail()));
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
+    public String signup(SignupRequest request, HttpServletResponse response) {
+        // Trim input
+        String email = request.getEmail() != null ? request.getEmail().trim() : "";
+        String username = request.getUsername() != null ? request.getUsername().trim() : "";
+        String password = request.getPassword() != null ? request.getPassword().trim() : "";
 
+        // Validation checks
+        if (email.isEmpty() || username.isEmpty() || password.isEmpty()) {
+            return "Email, Username, and Password must be provided";
+        }
+
+        if (!email.contains("@")) {
+            return "Invalid email format. Email must contain '@'";
+        }
+
+        if (password.length() < 4) {
+            return "Password must be at least 4 characters long";
+        }
+
+        if (userRepo.findByEmail(email).isPresent()) {
+            return "User already exists with this email";
+        }
+
+        // Check for duplicate username (optional)
+        if (userRepo.findAll().stream().anyMatch(user -> user.getUsername().equalsIgnoreCase(username))) {
+            return "Username already taken";
+        }
+
+        // Save new user
+        User user = new User();
+        user.setUsername(username);
+        user.setEmail(email);
+        user.setPassword(passwordEncoder.encode(password));
         userRepo.save(user);
-        emailService.sendMail(user.getEmail(), "Signup successfull","Hello" + user.getUsername()+" you have successfully signed up.");
+
+        // Generate JWT and set in cookie
+        String token = jwtUtil.generateToken(user.getEmail());
+
+        Cookie cookie = new Cookie("jwt", token);
+        cookie.setHttpOnly(true);
+        cookie.setPath("/");
+        cookie.setMaxAge(60 * 60);
+        response.addCookie(cookie);
+
+        emailService.sendMail(user.getEmail(), "Signup Successful",
+                "Hello " + user.getUsername() + ", you have successfully signed up.");
+
         return "User Registered Successfully";
     }
-    public String login(LoginRequest request){
 
-    authenticationManager.authenticate(
-            new UsernamePasswordAuthenticationToken(request.getEmail() , request.getPassword())
-    );
+    public String login(LoginRequest request, HttpServletResponse response) {
+        String email = request.getEmail() != null ? request.getEmail().trim() : "";
+        String password = request.getPassword() != null ? request.getPassword().trim() : "";
 
-
-
-        User user = userRepo.findByEmail(request.getEmail())
-                .orElseThrow(()->new RuntimeException("User not found"));
-        if(!passwordEncoder.matches(request.getPassword() , user.getPassword()) ){
-            throw new RuntimeException("Invalid Credentails");
+        if (email.isEmpty() || password.isEmpty()) {
+            return "Email and password must be provided";
         }
-        emailService.sendMail(user.getEmail(), "Login Notification", "You just logged in at " + LocalDateTime.now());
 
-        return jwtUtil.generateToken(user.getEmail());
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(email, password)
+            );
+        } catch (Exception e) {
+            return "Invalid email or password";
+        }
+
+        User user = userRepo.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        String token = jwtUtil.generateToken(user.getEmail());
+
+        Cookie cookie = new Cookie("jwt", token);
+        cookie.setHttpOnly(true);
+        cookie.setPath("/");
+        cookie.setMaxAge(60 * 60);
+        response.addCookie(cookie);
+
+        emailService.sendMail(user.getEmail(), "Login Notification",
+                "You just logged in at " + LocalDateTime.now());
+
+        return "User login successful";
     }
 }
